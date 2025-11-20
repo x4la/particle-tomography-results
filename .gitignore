@@ -1,0 +1,17 @@
+out/
+test/
+data/platinum_particle
+data/thinfilm
+data/vesicle
+plots/
+benchmark_results.json
+latex_table_rows.txt
+
+.venv/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+

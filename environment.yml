@@ -1,0 +1,15 @@
+name: particle-tomography-results
+channels:
+  - astra-toolbox
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - h5py
+  - pandas
+  - scipy
+  - matplotlib
+  - mrcfile
+  - astra-toolbox
+  - pip
