@@ -1,5 +1,5 @@
 # Particle Tomography Results
-This is the official repository for the paper *Particle Tomography: A Grid-Free Approach to Tomographic Reconstruction*. It contains all scripts that were used to create the reconstructions and plots shown in the paper. The actual Particle Tomography algorithm is implemented [here](https://github.com/microscopic-image-analysis/particle-tomography).
+This is the official repository for the paper *Particle Tomography: A Grid-Free Approach to Tomographic Reconstruction*. It contains all scripts that were used to create the reconstructions and plots shown in the paper. The actual Particle Tomography algorithm is implemented [here](https://github.com/microscopic-image-analysis/particle-tomography). (This link will become active once the paper is publicly available.)
 
 To reproduce the results shown in the paper, follow these steps:
 
