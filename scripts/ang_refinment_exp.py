@@ -14,7 +14,7 @@ from scripts.plot import plot_rotation_refinement_pdf, save_and_plot_fsc_multipl
 from data.loader import load_vesicle_noisy_rotations, load_vesicle_data
 from scipy.spatial.transform import Rotation as R
 
-from utils import show_images
+from scripts.utils import show_images
 
 ROOT = Path(__file__).resolve().parent.parent
 INPUT_PATHS_VESICLE = {

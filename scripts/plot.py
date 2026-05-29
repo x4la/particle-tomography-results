@@ -15,6 +15,39 @@ from scripts.utils import angular_errors_deg
 
 ROOT = Path(__file__).resolve().parent.parent
 
+STANDARD_ALGORITHMS = ("particle_tomography", "RESIRE", "SIRT", "FBP")
+ALGORITHM_LABELS = {
+    "particle_tomography": "Particle Tomography",
+    "RESIRE": "RESIRE",
+    "SIRT": "SIRT",
+    "FBP": "FBP",
+}
+
+
+def load_standard_reconstructions(dataset_name, transpose_mat=True):
+    volumes = []
+    labels = []
+    for algo in STANDARD_ALGORITHMS:
+        for ext in (".npz", ".mat"):
+            path = ROOT / "out" / algo / dataset_name / f"{algo}_volume_reconstruction{ext}"
+            if not path.exists():
+                continue
+            if ext == ".npz":
+                data = np.load(path)
+                volume = data[data.files[0]]
+            else:
+                data = scipy.io.loadmat(path)
+                keys = [k for k in data if not k.startswith("__")]
+                volume = data[keys[0]]
+                if transpose_mat:
+                    volume = volume.transpose(1, 0, 2).copy()
+            volumes.append(volume)
+            labels.append(ALGORITHM_LABELS[algo])
+            break
+    if not volumes:
+        raise FileNotFoundError(f"No reconstruction outputs found for {dataset_name!r} under {ROOT / 'out'}")
+    return volumes, labels
+
 
 def plot_rotation_refinement_pdf(true_rots,
                                  noisy_rots,
@@ -86,25 +119,7 @@ def plot_vesicle(show_3d_volumes=False):
 
     _, _, _, true_volume = load_vesicle_data(input_paths, return_angles=False)
 
-    algorithms = ["particle_tomography", "RESIRE", "SIRT", "FBP"]
-    volumes = {}
-
-    # Load reconstruction from different algorithms
-    for algo in algorithms:
-        for ext in (".npz", ".mat"):
-            path = ROOT / "out" / algo / "vesicle" / f"{algo}_volume_reconstruction{ext}"
-            if path.exists():
-                if ext == ".npz":
-                    data = np.load(path)
-                    volumes[algo] = data[data.files[0]]
-                else:  # .mat
-                    data = scipy.io.loadmat(path)
-                    keys = [k for k in data if not k.startswith("__")]
-                    volumes[algo] = data[keys[0]].transpose(1, 0, 2).copy()
-                break  # Stop after first matching extension
-
-    volumes = list(volumes.values())
-    algorithms = ["Particle Tomography", "RESIRE", "SIRT", "FBP"]
+    volumes, algorithms = load_standard_reconstructions("vesicle")
     make_and_save_plots("vesicle", volumes, algorithms, true_volume, ROOT / "plots" / "vesicle", 10)
 
     if show_3d_volumes:
@@ -122,25 +137,7 @@ def plot_protein(show_3d_volumes=False):
 
     _, _, true_volume = load_protein_data(input_paths, return_angles=False)
 
-    algorithms = ["particle_tomography", "RESIRE", "SIRT", "FBP"]
-    volumes = {}
-
-    # Load reconstruction from different algorithms
-    for algo in algorithms:
-        for ext in (".npz", ".mat"):
-            path = ROOT / "out" / algo / "protein" / f"{algo}_volume_reconstruction{ext}"
-            if path.exists():
-                if ext == ".npz":
-                    data = np.load(path)
-                    volumes[algo] = data[data.files[0]]
-                else:  # .mat
-                    data = scipy.io.loadmat(path)
-                    keys = [k for k in data if not k.startswith("__")]
-                    volumes[algo] = data[keys[0]].transpose(1, 0, 2).copy()
-                break  # Stop after first matching extension
-
-    volumes = list(volumes.values())
-    algorithms = ["Particle Tomography", "RESIRE", "SIRT", "FBP"]
+    volumes, algorithms = load_standard_reconstructions("protein")
     make_and_save_plots("protein", volumes, algorithms, true_volume, ROOT / "plots" / "protein",
                         slice_thickness=10)
 
@@ -150,25 +147,7 @@ def plot_protein(show_3d_volumes=False):
 
 
 def plot_thinfilm(show_3d_volumes=False):
-    algorithms = ["particle_tomography", "RESIRE", "SIRT", "FBP"]
-    volumes = {}
-
-    # Load reconstruction from different algorithms
-    for algo in algorithms:
-        for ext in (".npz", ".mat"):
-            path = ROOT / "out" / algo / "thinfilm" / f"{algo}_volume_reconstruction{ext}"
-            if path.exists():
-                if ext == ".npz":
-                    data = np.load(path)
-                    volumes[algo] = data[data.files[0]]
-                else:  # .mat
-                    data = scipy.io.loadmat(path)
-                    keys = [k for k in data if not k.startswith("__")]
-                    volumes[algo] = data[keys[0]]
-                break  # Stop after first matching extension
-
-    volumes = list(volumes.values())
-    algorithms = ["Particle Tomography", "RESIRE", "SIRT", "FBP"]
+    volumes, algorithms = load_standard_reconstructions("thinfilm", transpose_mat=False)
     make_and_save_plots("thinfilm", volumes, algorithms, true_volume=None, outdir=ROOT / "plots" / "thinfilm", slice_thickness=5)
 
     if show_3d_volumes:
@@ -244,6 +223,9 @@ def save_and_plot_fsc_multiple(frequencies_list, correlations_list, algo_names,
 
 
 def make_and_save_plots(experiment_name, volumes, algorithm_names, true_volume, outdir, slice_thickness, clip_color_map=False):
+    if len(volumes) != len(algorithm_names):
+        raise ValueError("volumes and algorithm_names must have the same length")
+
     # Create output directory if it doesn't exist
     os.makedirs(outdir, exist_ok=True)
 

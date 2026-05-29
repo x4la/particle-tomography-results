@@ -1,51 +1,36 @@
 from pathlib import Path
+import os
 import time
 import h5py
 import numpy as np
 import json
 from typing import Dict, Any
 
+import torch
 import particle_tomography as pt
-from data.loader import load_vesicle_data, load_protein_data, load_thinfilm_data, load_platinum_data
-from scripts.reconstruct.fbp_astra import reconstruct_fbp
-from scripts.reconstruct.sirt_astra import reconstruct_sirt
+
+try:
+    from scripts.reconstruct.fbp_astra import reconstruct_fbp
+    from scripts.reconstruct.sirt_astra import reconstruct_sirt
+except ModuleNotFoundError as exc:
+    if exc.name != "astra":
+        raise
+
+    def _missing_astra(*args, **kwargs):
+        raise RuntimeError("ASTRA Toolbox is required for SIRT/FBP. Install the conda environment or run without those methods.")
+
+    reconstruct_fbp = _missing_astra
+    reconstruct_sirt = _missing_astra
+
+from scripts.datasets import benchmark_dataset_configs, dataset_names
 from scripts.utils import fsc, calc_r_factor_memory_efficient, save_output
 
 
 ROOT = Path(__file__).resolve().parent.parent
-
-DATASET_CONFIGS = {
-    # "vesicle": {
-    #     "projection_file": ROOT / "data" / "vesicle" / "projections_vesicle.mat",
-    #     "rotations_file": ROOT / "data" / "vesicle" / "projections_vesicle_euler_angles.mat",
-    #     "true_volume_file": ROOT / "data" / "vesicle" / "vesicle.mrc",
-    #     "loader": load_vesicle_data,
-    #     "has_shifts": True,
-    #     "has_true_volume": True
-    # },
-    "protein": {
-        "projection_file": ROOT / "data" / "protein" / "projections_6b3r_wedge40_step-2.0_pixel-132_blur-0.6299118258855213.npz",
-        "rotations_file": ROOT / "data" / "protein" / "projections_6b3r_wedge40_step-2.0_euler_angles.txt",
-        "true_volume_file": ROOT / "data" / "protein" / "6b3r_pixel-132_blur-0.6299118258855213.npz",
-        "loader": load_protein_data,
-        "has_shifts": False,
-        "has_true_volume": True
-    },
-    # "thinfilm": {
-    #     "projection_file": ROOT / "data" / "thinfilm" / "projections_thinfilm.mat",
-    #     "rotations_file": ROOT / "data" / "thinfilm" / "projections_thinfilm_euler_angles.mat",
-    #     "loader": load_thinfilm_data,
-    #     "has_shifts": False,
-    #     "has_true_volume": False
-    # },
-    # "platinum": {
-    #     "projection_file": ROOT / "data" / "platinum_particle" / "tiltser_180.tif",
-    #     "rotations_file": ROOT / "data" / "platinum_particle" / "euler_angles.txt",
-    #     "loader": load_platinum_data,
-    #     "has_shifts": False,
-    #     "has_true_volume": False
-    # }
-}
+PARTICLE_TOMOGRAPHY_DEVICE = os.environ.get("PARTICLE_TOMOGRAPHY_DEVICE", "auto")
+R_FACTOR_DEVICE = os.environ.get("R_FACTOR_DEVICE", PARTICLE_TOMOGRAPHY_DEVICE)
+DATASET_CONFIGS = benchmark_dataset_configs(include_external=True)
+DEFAULT_METHODS = ["particle_tomography", "SIRT", "FBP"]
 
 METHOD_CONFIGS = {
     "particle_tomography": {
@@ -77,13 +62,13 @@ METHOD_CONFIGS = {
             }
         }
     },
-    # "RESIRE": {
-    #     "function": None,
-    #     "needs_angles": False,
-    #     "needs_rotations": False,
-    #     "needs_shifts": False,
-    #     "iterations": 1,  # Default, will be overridden
-    # },
+    "RESIRE": {
+        "function": None,
+        "needs_angles": False,
+        "needs_rotations": False,
+        "needs_shifts": False,
+        "iterations": 1,  # Loaded from precomputed external output
+    },
     "SIRT": {
         "function": reconstruct_sirt,
         "needs_angles": True,  # Uses angles_deg[:,1]
@@ -100,6 +85,13 @@ METHOD_CONFIGS = {
     }
 }
 
+
+
+
+def _resolve_torch_device(device):
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
 
 RESIRE_METADATA = {
     "vesicle": {
@@ -203,7 +195,7 @@ class MethodRunner:
         # Special handling for particle_tomography
         if method_name == "particle_tomography":
             params = config["dataset_params"][dataset_name].copy()
-            params["device"] = "cuda"
+            params["device"] = PARTICLE_TOMOGRAPHY_DEVICE
 
             # Build args specifically for particle_tomography
             pt_args = [data["images"], data["rotations"]]
@@ -216,7 +208,9 @@ class MethodRunner:
             t2 = time.time()
 
             # Save sparse model
-            model.save_model(ROOT / "out" / "particle_tomography" / dataset_name / "model.pt")
+            model_outdir = ROOT / "out" / "particle_tomography" / dataset_name
+            model_outdir.mkdir(parents=True, exist_ok=True)
+            model.save_model(model_outdir / "model.pt")
 
             fsc_at_nyquist = None
             if dataset_config.get("has_true_volume"):
@@ -225,7 +219,7 @@ class MethodRunner:
                 fsc_at_nyquist = fsc_vals[-1].item()
 
             r_factor_sparse = model.get_r_factor()
-            r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1])
+            r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1], device=_resolve_torch_device(R_FACTOR_DEVICE))
 
             metadata = {
                 "iterations": params.get("total_iterations"),
@@ -250,7 +244,7 @@ class MethodRunner:
             _, fsc_vals = fsc(true_vol, result)
             fsc_at_nyquist = fsc_vals[-1].item()
 
-        r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1])
+        r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1], device=_resolve_torch_device(R_FACTOR_DEVICE))
         r_factor_sparse = None
 
         metadata = {
@@ -291,7 +285,7 @@ class MethodRunner:
             fsc_at_nyquist = fsc_vals[-1].item()
 
         # Calculate r-factor
-        r_factor_voxel = calc_r_factor_memory_efficient(volume, data["images"], data["angles_deg"][:, 1])
+        r_factor_voxel = calc_r_factor_memory_efficient(volume, data["images"], data["angles_deg"][:, 1], device=_resolve_torch_device(R_FACTOR_DEVICE))
         r_factor_custom_forward = resire_meta["r_factor_custom_forward"]
 
         metadata = {
@@ -314,7 +308,7 @@ class MethodRunner:
             args.append(data["shifts"])
 
         # Add device parameter
-        params["device"] = "cuda"
+        params["device"] = PARTICLE_TOMOGRAPHY_DEVICE
 
         # Extract iterations for metadata
         iterations = params.get("total_iterations", None)
@@ -326,7 +320,9 @@ class MethodRunner:
         t2 = time.time()
 
         # save sparse model
-        model.save_model(ROOT / "out" / "particle_tomography" / dataset_name / "model.pt")
+        model_outdir = ROOT / "out" / "particle_tomography" / dataset_name
+        model_outdir.mkdir(parents=True, exist_ok=True)
+        model.save_model(model_outdir / "model.pt")
 
         fsc_at_nyquist = None
         if dataset_config["has_true_volume"]:
@@ -334,7 +330,7 @@ class MethodRunner:
             freqs, fsc_vals = model.get_fsc(true_vol)
             fsc_at_nyquist = fsc_vals[-1].item()
         r_factor_sparse = model.get_r_factor()
-        r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1])
+        r_factor_voxel = calc_r_factor_memory_efficient(result, data["images"], data["angles_deg"][:, 1], device=_resolve_torch_device(R_FACTOR_DEVICE))
 
 
         metadata = {
@@ -380,14 +376,21 @@ def benchmark_method(method_name: str, dataset_name: str, data_manager: DatasetM
     }
 
 
-def run_all_benchmarks() -> list:
-    """Run all method/dataset combinations and collect results"""
+def run_benchmarks(dataset_names_filter=None, method_names_filter=None) -> list:
+    """Run selected method/dataset combinations and collect results."""
     data_manager = DatasetManager()
     method_runner = MethodRunner(data_manager)
 
     results = []
-    datasets = list(DATASET_CONFIGS.keys())
-    methods = list(METHOD_CONFIGS.keys())
+    datasets = list(dataset_names_filter or dataset_names(include_external=False))
+    methods = list(method_names_filter or DEFAULT_METHODS)
+
+    unknown_datasets = sorted(set(datasets) - set(DATASET_CONFIGS))
+    unknown_methods = sorted(set(methods) - set(METHOD_CONFIGS))
+    if unknown_datasets:
+        raise ValueError(f"Unknown datasets: {unknown_datasets}")
+    if unknown_methods:
+        raise ValueError(f"Unknown methods: {unknown_methods}")
 
     for dataset in datasets:
         for method in methods:
@@ -420,6 +423,11 @@ def run_all_benchmarks() -> list:
     with open(ROOT / "latex_table_rows.txt", 'w') as f:
         f.write(latex_table)
     return results
+
+
+def run_all_benchmarks() -> list:
+    """Run the included reproducible benchmark subset."""
+    return run_benchmarks()
 
 
 def json_to_latex_table(results_file: str = None) -> str:
@@ -477,21 +485,21 @@ def json_to_latex_table(results_file: str = None) -> str:
             r_factor_voxel = f"{method['r_factor_voxel']:.1f}" if method['r_factor_voxel'] is not None else "-"
             r_factor_sparse = f"{method['r_factor_sparse']:.1f}" if method['r_factor_sparse'] is not None else "-"
             if method['method'] == "particle_tomography":
-                row = f"{dataset_cell} & {"Particle Tomography"} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} ({r_factor_sparse}) & {size_cell} \\\\"
+                row = f"{dataset_cell} & Particle Tomography & {runtime} & {iterations} & {fsc} & {r_factor_voxel} ({r_factor_sparse}) & {size_cell} \\\\"
             elif method['method'] == "RESIRE":
                 row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} ({r_factor_sparse}) & {size_cell} \\\\"
             elif method['method'] == "SIRT":
                 if dataset == "thinfilm":
-                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \phantom{{(00.0)}} & {size_cell} \\\\"
+                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \\phantom{{(00.0)}} & {size_cell} \\\\"
                 if dataset == "platinum":
-                    row = f"{dataset_cell} & {method['method']} & \multicolumn{{4}}{{c}}{{\\textit{{out of memory}}}} & \\\\"
+                    row = f"{dataset_cell} & {method['method']} & \\multicolumn{{4}}{{c}}{{\\textit{{out of memory}}}} & \\\\"
                 else:
-                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \phantom{{(0.0)}} & {size_cell} \\\\"
+                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \\phantom{{(0.0)}} & {size_cell} \\\\"
             else:
                 if dataset == "thinfilm":
-                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \phantom{{(00.0)}} & {size_cell} \\\\"
+                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \\phantom{{(00.0)}} & {size_cell} \\\\"
                 else:
-                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \phantom{{(0.0)}} & {size_cell} \\\\"
+                    row = f"{dataset_cell} & {method['method']} & {runtime} & {iterations} & {fsc} & {r_factor_voxel} \\phantom{{(0.0)}} & {size_cell} \\\\"
             latex_rows.append(row)
 
         if dataset != list(by_dataset.keys())[-1]:  # Add midrule between datasets
@@ -502,7 +510,7 @@ def json_to_latex_table(results_file: str = None) -> str:
 
 
 if __name__ == "__main__":
-    # Run all benchmarks and save reconstructions in /out. A benchmark_results.json is created that summarizes the results
+    # Run the included reproducible benchmark subset and save reconstructions in /out.
     run_all_benchmarks()
 
     # read benchmark_results.json and generate latex table.

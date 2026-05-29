@@ -8,6 +8,8 @@ dependencies:
   - numpy
   - h5py
   - pandas
+  - pyvista
+  - tifffile
   - scipy
   - matplotlib
   - mrcfile
